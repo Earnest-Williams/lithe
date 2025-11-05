@@ -630,6 +630,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    logging.getLogger("transitions").setLevel(logging.WARNING)
     cfg = load_cfg(Path(args.config))
 
     # DB
