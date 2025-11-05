@@ -43,13 +43,11 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship,
 
 # Qt
 from PySide6.QtCore import QObject, QRect, Qt, Signal
-from PySide6.QtGui import QAction, QPixmap, QImage, QKeySequence
+from PySide6.QtGui import QAction, QPixmap, QImage, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton, QGridLayout,
     QListWidget, QListWidgetItem, QInputDialog, QProgressBar
 )
-# QKeySequence already imported above
-
 # -------------------------- Config (YAML → Pydantic) --------------------------
 
 DEFAULT_CFG_YAML = """
@@ -511,15 +509,15 @@ class MainWindow(QWidget):
         self.overlay = BottomOverlay(self.bus, parent=self)
 
         # nav bar (top row)
-        top = QHBoxLayout(self)
+        self.root = QVBoxLayout(self)
+        top = QHBoxLayout()
         self.loc_lbl = QLabel("—")
         top.addWidget(self.loc_lbl)
         top.addStretch(1)
         self.exits_bar = QHBoxLayout(); top.addLayout(self.exits_bar)
         self.talk_btn = QPushButton(cfg.ui.talk_button); top.addWidget(self.talk_btn)
-        container = QVBoxLayout(self)
-        container.addLayout(top)
-        container.addStretch(1)
+        self.root.addLayout(top)
+        self.root.addStretch(1)
 
         # bind signals
         self.bus.nav_ready.connect(self._render_nav)
