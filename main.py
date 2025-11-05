@@ -64,27 +64,6 @@ ui:
   mp_format: "MP %v"
   stamina_format: "STA %v"
 
-world:
-  locations:
-    - id: "residential district"
-      name: "Residential District"
-      description: "Quiet streets and jury‑rigged solar lines."
-      exits: ["club", "school"]
-    - id: "club"
-      name: "Club"
-      description: "Makeshift dance hall with salvaged speakers."
-      exits: ["residential district", "school"]
-    - id: "school"
-      name: "School"
-      description: "Library nook restored as a community hub."
-      exits: ["residential district"]
-
-  girls:
-    - id: "tammy"
-      name: "Tammy"
-      meet_at: "residential district"
-      affinity: "school"
-
 assets:
   backgrounds:
     residential district: assets/locales/classroom_generic.png
@@ -121,6 +100,25 @@ class GirlCfg(BaseModel):
     meet_at: str
     affinity: Optional[str] = None
 
+
+class LocationExt(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    exits: List[str] = Field(default_factory=list)
+    bg_key: str | None = None
+
+
+class NPCExt(BaseModel):
+    id: str
+    name: str
+    meet_at: str
+    affinity_loc: str | None = None
+    sprite_key_neutral: str | None = None
+    sprite_key_happy: str | None = None
+    stats_archetype: str | None = None
+
+
 class WorldCfg(BaseModel):
     locations: List[LocationCfg]
     girls: List[GirlCfg]
@@ -132,7 +130,7 @@ class AssetsCfg(BaseModel):
 
 class AppCfg(BaseModel):
     ui: UIStrings = Field(default_factory=UIStrings)
-    world: WorldCfg
+    world: Optional[WorldCfg] = None
     assets: AssetsCfg = Field(default_factory=AssetsCfg)
 
 
@@ -146,6 +144,17 @@ def load_cfg(path: Path) -> AppCfg:
         return AppCfg.model_validate(data)
     except ValidationError as e:
         raise SystemExit(f"Invalid config: {e}")
+
+
+def load_yaml_list(path: Path, root_key: str) -> list[dict]:
+    if not path.exists():
+        return []
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    seq = data.get(root_key, [])
+    if not isinstance(seq, list):
+        raise SystemExit(f"{path} must contain '{root_key}:' as a list")
+    return seq
 
 # -------------------------- Data (SQLite via SQLAlchemy) ----------------------
 
@@ -243,7 +252,7 @@ class Bus(QObject):
 
 @dataclass
 class EngineCtx:
-    current_location: str
+    current_location: Optional[str]
     focused_girl: Optional[str] = None
 
 class EngineAdapter:
@@ -258,7 +267,14 @@ class EngineAdapter:
         self.bus.toast_history.emit(self._toast_history)
 
         self.fsm = GameStateMachine(self._emit_state)
-        self.ctx = EngineCtx(current_location=cfg.world.locations[0].id)
+        first_loc_id = session.scalar(select(Location.id).order_by(Location.id.asc()))
+        if not first_loc_id:
+            loc_defs = load_yaml_list(Path("data/locations.yaml"), "locations")
+            if loc_defs:
+                first_loc_id = loc_defs[0].get("id")
+            elif cfg.world and cfg.world.locations:
+                first_loc_id = cfg.world.locations[0].id
+        self.ctx = EngineCtx(current_location=first_loc_id)
 
         self.assets_bg = cfg.assets.backgrounds
         self.assets_sprites = cfg.assets.sprites
@@ -362,8 +378,26 @@ class EngineAdapter:
     # ----- emitters -----
     def _emit_scene(self) -> None:
         loc = self._loc(self.ctx.current_location)
-        bg_path = self.assets_bg.get(loc.id if loc else "", self.cfg.assets.default_bg)
-        sprite_path = self.assets_sprites.get("happy" if self._girl(self.ctx.focused_girl) and self._girl(self.ctx.focused_girl).opinion >= 2 else "neutral")
+        cfg_loc = None
+        for l in load_yaml_list(Path("data/locations.yaml"), "locations"):
+            if l.get("id") == (loc.id if loc else ""):
+                cfg_loc = l
+                break
+        bg_key = (cfg_loc or {}).get("bg_key")
+        bg_path = self.assets_bg.get(bg_key or "", self.cfg.assets.default_bg)
+
+        npc_def = None
+        for gdef in load_yaml_list(Path("data/npcs.yaml"), "npcs"):
+            if gdef.get("id") == (self.ctx.focused_girl or ""):
+                npc_def = gdef
+                break
+        girl = self._girl(self.ctx.focused_girl)
+        sprite_key = (
+            npc_def.get("sprite_key_happy")
+            if (npc_def and girl and girl.opinion >= 2)
+            else (npc_def or {}).get("sprite_key_neutral")
+        )
+        sprite_path = self.assets_sprites.get(sprite_key or "")
         self.bus.scene_changed.emit({
             "bg": path_to_pixmap(bg_path, f"BG: {loc.name if loc else '—'}"),
             "sprite": path_to_pixmap(sprite_path, "Sprite") if sprite_path else pil_placeholder("Sprite")
@@ -373,11 +407,19 @@ class EngineAdapter:
         loc = self._loc(self.ctx.current_location)
         exits = []
         if loc:
-            # exits per config
-            cfg_loc = next((l for l in self.cfg.world.locations if l.id == loc.id), None)
+            loc_defs = load_yaml_list(Path("data/locations.yaml"), "locations")
+            cfg_loc = next((l for l in loc_defs if l.get("id") == loc.id), None)
+            exits_ids: List[str] = []
             if cfg_loc:
-                for e in cfg_loc.exits:
-                    exits.append({"id": e, "label": e})
+                exits_ids = cfg_loc.get("exits", [])
+            elif self.cfg.world and self.cfg.world.locations:
+                cfg_loc_fallback = next((l for l in self.cfg.world.locations if l.id == loc.id), None)
+                if cfg_loc_fallback:
+                    exits_ids = cfg_loc_fallback.exits
+            for e in exits_ids:
+                dest = self._loc(e)
+                label = dest.name if dest else next((ld.get("name") for ld in loc_defs if ld.get("id") == e), e)
+                exits.append({"id": e, "label": label or e})
         # characters present (simplified: all girls)
         names = [g.name for g in self.db.scalars(select(Girl)).all()]
         self.bus.nav_ready.emit({
@@ -601,20 +643,39 @@ class MainWindow(QWidget):
 # -------------------------- Bootstrapping -------------------------------------
 
 def bootstrap_db(session: Session, cfg: AppCfg):
+    data_dir = Path("data")
+    loc_defs = [LocationExt.model_validate(x) for x in load_yaml_list(data_dir / "locations.yaml", "locations")]
+    npc_defs = [NPCExt.model_validate(x) for x in load_yaml_list(data_dir / "npcs.yaml", "npcs")]
+
+    # Fallback if files missing: derive from old embedded defaults (optional)
+    if not loc_defs and hasattr(cfg, "world") and getattr(cfg.world, "locations", None):
+        for lc in cfg.world.locations:
+            loc_defs.append(LocationExt(id=lc.id, name=lc.name, description=lc.description, exits=lc.exits))
+
+    if not npc_defs and hasattr(cfg, "world") and getattr(cfg.world, "girls", None):
+        for gc in cfg.world.girls:
+            npc_defs.append(NPCExt(id=gc.id, name=gc.name, meet_at=gc.meet_at, affinity_loc=gc.affinity))
+
     # Seed locations
-    existing = {lid for (lid,) in session.execute(select(Location.id)).all()}
-    for lc in cfg.world.locations:
-        if lc.id not in existing:
+    existing_lids = {lid for (lid,) in session.execute(select(Location.id)).all()}
+    for lc in loc_defs:
+        if lc.id not in existing_lids:
             session.add(Location(id=lc.id, name=lc.name, description=lc.description))
-    # Seed girls
-    existing_g = {gid for (gid,) in session.execute(select(Girl.id)).all()}
-    for gc in cfg.world.girls:
-        if gc.id not in existing_g:
-            session.add(Girl(id=gc.id, name=gc.name, meet_at_id=gc.meet_at, affinity_loc_id=gc.affinity))
-    # Ensure player
+
+    # Seed NPCs -> Girls (DB keeps same table)
+    existing_gids = {gid for (gid,) in session.execute(select(Girl.id)).all()}
+    for npc in npc_defs:
+        if npc.id not in existing_gids:
+            session.add(Girl(
+                id=npc.id,
+                name=npc.name,
+                meet_at_id=npc.meet_at,
+                affinity_loc_id=npc.affinity_loc
+            ))
+
+    # Ensure player + minimal knowledge
     if not session.get(Player, 1):
         session.add(Player(id=1, name="Protagonist"))
-    # Minimal knowledge stub
     if not session.scalar(select(func.count(Knowledge.id))):
         session.add_all([
             Knowledge(kind="note", title="Long Twilight", text="Failed apocalypse; infrastructure limps."),

@@ -1,0 +1,18 @@
+# Schema: list of items (not yet wired into UI; safe to keep for later)
+# - id, name, kind, price, tags, effects
+items:
+  - id: snack_bar
+    name: Snack Bar
+    kind: consumable
+    price: 3
+    tags: [food, gift]
+    effects:
+      stamina:+2
+
+  - id: book_romance
+    name: Secondhand Romance Novel
+    kind: gift
+    price: 8
+    tags: [book, gift]
+    effects:
+      opinion:+1

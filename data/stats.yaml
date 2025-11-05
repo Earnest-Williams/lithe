@@ -1,0 +1,15 @@
+# Schema: attribute and skill archetypes (future use)
+attributes: [charm, intellect, fitness, empathy]
+skills: [conversation, dancing, studying]
+
+archetypes:
+  baseline:
+    attributes:
+      charm: 1
+      intellect: 1
+      fitness: 1
+      empathy: 1
+    skills:
+      conversation: 1
+      dancing: 0
+      studying: 0

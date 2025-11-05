@@ -1,0 +1,14 @@
+# Schema: list of NPCs
+# - id, name: identity
+# - meet_at: location id where first encounter occurs
+# - affinity_loc: location id that slightly boosts opinion deltas (optional)
+# - sprite_key_neutral / sprite_key_happy: keys for assets.sprites (optional)
+# - stats_archetype: reference into stats.yaml (optional, future use)
+npcs:
+  - id: tammy
+    name: Tammy
+    meet_at: residential_district
+    affinity_loc: school
+    sprite_key_neutral: neutral
+    sprite_key_happy: happy
+    stats_archetype: baseline
