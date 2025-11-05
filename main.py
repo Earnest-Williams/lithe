@@ -134,6 +134,21 @@ class AppCfg(BaseModel):
     assets: AssetsCfg = Field(default_factory=AssetsCfg)
 
 
+class ActionDef(BaseModel):
+    id: str
+    label: str
+    scope: str = "player"
+    category: str = "utility"
+    fsm: List[str] = Field(default_factory=list)
+    where: str = "*"
+    target: str = "none"
+    requires: Dict[str, str] = Field(default_factory=dict)
+    costs: Dict[str, int] = Field(default_factory=dict)
+    effects: Dict[str, object] = Field(default_factory=dict)
+    cooldown: Optional[int] = None
+    time_cost: int = 0
+
+
 def load_cfg(path: Path) -> AppCfg:
     if not path.exists():
         data = yaml.safe_load(DEFAULT_CFG_YAML)
@@ -155,6 +170,14 @@ def load_yaml_list(path: Path, root_key: str) -> list[dict]:
     if not isinstance(seq, list):
         raise SystemExit(f"{path} must contain '{root_key}:' as a list")
     return seq
+
+
+def load_actions() -> List[ActionDef]:
+    path = Path("data/actions.yaml")
+    if not path.exists():
+        return []
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return [ActionDef.model_validate(a) for a in raw.get("actions", [])]
 
 # -------------------------- Data (SQLite via SQLAlchemy) ----------------------
 
@@ -279,6 +302,8 @@ class EngineAdapter:
         self.assets_bg = cfg.assets.backgrounds
         self.assets_sprites = cfg.assets.sprites
         self.default_bg = cfg.assets.default_bg
+        self._actions = load_actions()
+        self._cooldowns: Dict[str, int] = {}
 
         self.focus(self._first_girl_id())
         self._emit_scene()
@@ -307,6 +332,125 @@ class EngineAdapter:
         if not gid:
             return None
         return self.db.get(Girl, gid)
+
+    def _ctx_vars(self) -> Dict[str, object]:
+        p = self.db.get(Player, 1)
+        g = self._girl(self.ctx.focused_girl)
+        return {
+            "state": self.fsm.state,
+            "location": self.ctx.current_location,
+            "focused_girl": (g.name if g else None),
+            "focused_opinion": (g.opinion if g else None),
+            "hp": p.hp if p else None,
+            "mp": p.mp if p else None,
+            "stamina": p.stamina if p else None,
+        }
+
+    def _test_requires(self, reqs: Dict[str, str], vars: Dict[str, object]) -> bool:
+        for key, expr in reqs.items():
+            val = vars.get(key)
+            expr = str(expr).strip()
+            if " in " in expr:
+                try:
+                    _, rhs = expr.split(" in ", 1)
+                    rhs_val = yaml.safe_load(rhs)
+                    if isinstance(rhs_val, (list, tuple, set, str)):
+                        if val not in rhs_val:
+                            return False
+                    else:
+                        return False
+                except Exception:
+                    return False
+            else:
+                import operator as op
+
+                ops = {">=": op.ge, "<=": op.le, ">": op.gt, "<": op.lt, "==": op.eq, "!=": op.ne}
+                for sym, fn in ops.items():
+                    if sym in expr:
+                        rhs_val = yaml.safe_load(expr.split(sym, 1)[1].strip())
+                        try:
+                            if not fn(val, rhs_val):
+                                return False
+                        except Exception:
+                            return False
+                        break
+                else:
+                    if not bool(val):
+                        return False
+        return True
+
+    def available_actions(self) -> List[ActionDef]:
+        vars = self._ctx_vars()
+        def loc_ok(action: ActionDef) -> bool:
+            return action.where == "*" or action.where == vars.get("location")
+
+        def fsm_ok(action: ActionDef) -> bool:
+            return not action.fsm or vars.get("state") in action.fsm
+
+        def cd_ok(action: ActionDef) -> bool:
+            return self._cooldowns.get(action.id, 0) == 0
+
+        def req_ok(action: ActionDef) -> bool:
+            return self._test_requires(action.requires, vars)
+
+        return [a for a in self._actions if loc_ok(a) and fsm_ok(a) and cd_ok(a) and req_ok(a)]
+
+    def perform_action(self, action_id: str) -> None:
+        action = next((x for x in self._actions if x.id == action_id), None)
+        if not action:
+            self._toast("Unknown action.")
+            return
+        if action not in self.available_actions():
+            self._toast("Cannot do that right now.")
+            return
+
+        p = self.db.get(Player, 1)
+        if not p:
+            return
+
+        for key, value in action.costs.items():
+            if hasattr(p, key):
+                delta = int(value)
+                if delta > 0:
+                    delta = -abs(delta)
+                setattr(p, key, max(0, getattr(p, key) + delta))
+
+        for key, value in action.effects.items():
+            if key in {"toast", "advance_state", "opinion"}:
+                continue
+            if hasattr(p, key):
+                setattr(p, key, max(0, getattr(p, key) + int(value)))
+
+        if "opinion" in action.effects and self.ctx.focused_girl:
+            g = self._girl(self.ctx.focused_girl)
+            if g:
+                g.opinion += int(action.effects["opinion"])
+                self.db.add(g)
+
+        if (msg := action.effects.get("toast")):
+            self._toast(str(msg))
+
+        if action.cooldown:
+            self._cooldowns[action.id] = int(action.cooldown)
+
+        advance = action.effects.get("advance_state")
+        if isinstance(advance, str) and hasattr(self.fsm, advance):
+            getattr(self.fsm, advance)()
+        else:
+            if action.time_cost and hasattr(self.fsm, "start_day"):
+                self.fsm.start_day()
+
+        self.db.add(p)
+        self.db.commit()
+
+        if action.time_cost:
+            for key in list(self._cooldowns.keys()):
+                self._cooldowns[key] = max(0, self._cooldowns[key] - action.time_cost)
+
+        self._emit_stats()
+        self._emit_scene()
+        self._emit_nav()
+        self.advance_dialogue()
 
     # ----- public API -----
     def advance_dialogue(self) -> Dict[str, object]:
@@ -557,6 +701,7 @@ class MainWindow(QWidget):
         top.addWidget(self.loc_lbl)
         top.addStretch(1)
         self.exits_bar = QHBoxLayout(); top.addLayout(self.exits_bar)
+        self.actions_bar = QHBoxLayout(); top.addLayout(self.actions_bar)
         self.talk_btn = QPushButton(cfg.ui.talk_button); top.addWidget(self.talk_btn)
         self.root.addLayout(top)
         self.root.addStretch(1)
@@ -566,9 +711,14 @@ class MainWindow(QWidget):
         self.bus.stats_updated.connect(self._render_stats)
         self.bus.toast_history.connect(self._render_recent)
         self.bus.option_chosen.connect(self._choose)
+        self.bus.nav_ready.connect(lambda _payload: self._render_actions())
+        self.bus.stats_updated.connect(lambda _payload: self._render_actions())
+        self.bus.state_changed.connect(lambda _state: self._render_actions())
 
         # engine
+        self.engine = None
         self.engine = EngineAdapter(self.bus, cfg, session, seed=seed)
+        self._render_actions()
 
         # actions/shortcuts
         act = QAction(cfg.ui.deterministic_label, self)
@@ -605,6 +755,18 @@ class MainWindow(QWidget):
             b = QPushButton(ex["label"])
             b.clicked.connect(lambda _=False, exid=ex["id"]: self.engine.travel_to(exid))
             self.exits_bar.addWidget(b)
+
+    def _render_actions(self):
+        if not self.engine:
+            return
+        while self.actions_bar.count():
+            item = self.actions_bar.takeAt(0)
+            if (w := item.widget()):
+                w.deleteLater()
+        for action in self.engine.available_actions():
+            btn = QPushButton(action.label)
+            btn.clicked.connect(lambda _=False, aid=action.id: self.engine.perform_action(aid))
+            self.actions_bar.addWidget(btn)
 
     def _render_stats(self, s: dict):
         name = s.get("name", "You")

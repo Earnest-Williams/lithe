@@ -1,0 +1,65 @@
+# Actions are context-sensitive verbs the player can take.
+# Fields:
+# id: machine id
+# label: UI caption
+# scope: player|npc  (who the action primarily affects)
+# category: utility|social|rest|training|date
+# fsm: list of allowed finite-state-machine states
+# where: allowed locations (ids) or '*' for anywhere
+# target: none|npc  (if npc, engine will ask/select current focus unless target_id is supplied)
+# requires: simple predicates against state (AND of entries). Keys provided by engine context.
+#   Supported ops: >=, >, <=, <, ==, !=  (numbers), in (strings/lists), has_item
+# costs: named resource deltas (negative numbers spend)
+# effects: changes to stats/opinion/resources; can include "advance_state" to call an FSM trigger
+# cooldown: optional, in in-game ticks (integer)
+# time_cost: how many ticks to pass (integer)
+actions:
+  - id: work_out
+    label: Work out
+    scope: player
+    category: training
+    fsm: [day]
+    where: "*"
+    target: none
+    requires:
+      stamina: ">= 2"
+    costs:
+      stamina: 2
+    effects:
+      fitness: +1
+      hp: +1
+      toast: "You trained."
+      advance_state: start_day   # keep day loop simple by advancing a slice
+    time_cost: 1
+
+  - id: sleep
+    label: Sleep
+    scope: player
+    category: rest
+    fsm: [day]
+    where: "residential_district"
+    target: none
+    requires: {}
+    costs: {}
+    effects:
+      hp: +3
+      stamina: +5
+      toast: "You slept."
+      advance_state: start_day
+    time_cost: 1
+
+  - id: kiss
+    label: Kiss
+    scope: npc
+    category: social
+    fsm: [dialogue, date]
+    where: "*"
+    target: npc
+    requires:
+      focused_opinion: ">= 3"    # require sufficient rapport
+    costs: {}
+    effects:
+      opinion: +1                 # applies to target npc
+      toast: "She blushes."
+      advance_state: start_day
+    time_cost: 1
