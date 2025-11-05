@@ -1,0 +1,24 @@
+# Schema: list of locations
+# - id: machine id (string, unique)
+# - name: display name
+# - description: short text
+# - exits: list of other location ids
+# - bg_key: key that maps to an assets.backgrounds entry (optional)
+locations:
+  - id: residential_district
+    name: Residential District
+    description: Quiet streets and jury-rigged solar lines.
+    exits: [club, school]
+    bg_key: residential district
+
+  - id: club
+    name: Club
+    description: Makeshift dance hall with salvaged speakers.
+    exits: [residential_district, school]
+    bg_key: club
+
+  - id: school
+    name: School
+    description: Library nook restored as a community hub.
+    exits: [residential_district]
+    bg_key: school
